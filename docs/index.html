@@ -126,6 +126,11 @@ body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-a
 .memo { display: flex; flex-direction: column; gap: 4px; }
 .memo textarea { width: 100%; box-sizing: border-box; font: inherit; line-height: 1.6; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: #fffbe8; color: var(--ink); resize: vertical; min-height: 4.5em; }
 .memo .small { display: flex; justify-content: space-between; }
+.memo label.small { color: var(--ink); font-weight: 700; font-size: .95rem; }
+.memo div.small { color: var(--ink); opacity: .75; }
+.memo textarea { font-size: 1rem; border-color: #d9c98a; }
+.memo textarea::placeholder { color: #8a7d55; opacity: 1; }
+.note { color: var(--ink); }
 .note { background: #fffbe8; border-radius: 8px; padding: 6px 10px; white-space: pre-wrap; font-size: .9rem; }
 .qact { display: grid; grid-template-columns: auto 1fr; gap: 10px; }
 .star { background: var(--paper); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; font-weight: 500; }

@@ -106,6 +106,12 @@ body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-a
 .verdict.ok { background: var(--ok-soft); color: var(--ok); }
 .verdict.bad { background: var(--bad-soft); color: var(--bad); }
 .verdict small { font-weight: 400; color: var(--ink); }
+.hints { display: flex; flex-wrap: wrap; gap: 8px; }
+.hints a { display: inline-flex; align-items: center; gap: 4px; padding: 8px 12px; border-radius: 999px; border: 1px solid var(--line); background: var(--paper); color: var(--accent); text-decoration: none; font-size: .9rem; }
+.memo { display: flex; flex-direction: column; gap: 4px; }
+.memo textarea { width: 100%; box-sizing: border-box; font: inherit; line-height: 1.6; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: #fffbe8; color: var(--ink); resize: vertical; min-height: 4.5em; }
+.memo .small { display: flex; justify-content: space-between; }
+.note { background: #fffbe8; border-radius: 8px; padding: 6px 10px; white-space: pre-wrap; font-size: .9rem; }
 .qact { display: grid; grid-template-columns: auto 1fr; gap: 10px; }
 .star { background: var(--paper); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; font-weight: 500; }
 .star[aria-pressed="true"] { color: var(--star); border-color: var(--star); }
@@ -159,6 +165,8 @@ const TF_LABEL = { O: '○ 正確', X: '✕ 錯誤' };
 let D = null, byId = {};
 // prog[qid] = [答對次數, 答錯次數, 最後作答時間, 最後一次是否答對(1/0), 收藏(1/0)]
 let prog = LS.get('pq-prog', {});
+// notes[qid] = [筆記文字, 最後修改時間]
+let notes = LS.get('pq-notes', {});
 let setup = LS.get('pq-setup', { cats: [], type: 'all', mode: 'random', size: 20 });
 let session = LS.get('pq-session', null);
 let view = 'home', searchQ = '', searchCat = -1;
@@ -191,7 +199,7 @@ async function flush() {
 let backupMsg = '', pasteOpen = false;
 function b64(u8) { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s); }
 async function packProg() {
-  const json = JSON.stringify({ v: 1, prog });
+  const json = JSON.stringify({ v: 1, prog, notes });
   if (window.CompressionStream) {
     const buf = await new Response(new Blob([json]).stream().pipeThrough(new CompressionStream('gzip'))).arrayBuffer();
     return 'PQ1:' + b64(new Uint8Array(buf));
@@ -208,7 +216,7 @@ async function unpackProg(code) {
   else throw new Error('不是這個工具產生的備份');
   const o = JSON.parse(json);
   if (!o || typeof o.prog !== 'object') throw new Error('備份內容不完整');
-  return o.prog;
+  return o;
 }
 function mergeProg(inc) {
   let n = 0;
@@ -221,8 +229,18 @@ function mergeProg(inc) {
   if (db && dirty.size) { clearTimeout(flushTimer); flushTimer = setTimeout(flush, 500); }
   return n;
 }
+function mergeNotes(inc) {
+  let n = 0;
+  for (const [id, rec] of Object.entries(inc)) {
+    if (!Array.isArray(rec) || !byId[id]) continue;
+    const m = notes[id];
+    if (!m || (rec[1] || 0) > (m[1] || 0)) { notes[id] = rec; n++; }
+  }
+  LS.set('pq-notes', notes);
+  return n;
+}
 async function restoreFrom(text) {
-  try { const n = mergeProg(await unpackProg(text)); backupMsg = `還原完成，更新了 ${n} 題的紀錄。`; pasteOpen = false; }
+  try { const o = await unpackProg(text); const n = mergeProg(o.prog) + mergeNotes(o.notes || {}); backupMsg = `還原完成，更新了 ${n} 題的紀錄。`; pasteOpen = false; }
   catch (e) { backupMsg = '還原失敗：' + (e.message || '內容看不懂') + '。請確認貼上的是完整的備份碼或備份檔。'; }
   render();
 }
@@ -248,7 +266,7 @@ function viewBackup() {
     $('button', { class: 'go', onclick: () => restoreFrom(document.getElementById('restore-code').value) }, '還原這份紀錄')) : null;
   return $('section', { class: 'panel' },
     $('div', { class: 'top' }, $('h2', {}, '備份與搬移紀錄'), $('span', { class: 'small muted num' }, `目前 ${answered} 題有紀錄`)),
-    $('p', { class: 'small muted', style: 'margin:0' }, '答題紀錄只存在這台裝置。換手機、換電腦，或想留一份保險時，先備份，再到另一台裝置還原。兩邊的紀錄會合併，同一題保留比較新的那次。'),
+    $('p', { class: 'small muted', style: 'margin:0' }, '答題紀錄只存在這台裝置。換手機、換電腦，或想留一份保險時，先備份，再到另一台裝置還原。兩邊的紀錄會合併，同一題保留比較新的那次。筆記也會一起備份。'),
     $('div', { class: 'row' },
       $('button', { class: 'ghost', onclick: downloadBackup }, '下載備份檔'),
       $('button', { class: 'ghost', onclick: () => file.click() }, '從備份檔還原')),
@@ -335,6 +353,30 @@ function toggleStar(q) {
 function next() {
   if (session.i < session.ids.length - 1) { session.i++; LS.set('pq-session', session); render(); scrollTo(0, 0); }
   else { view = 'result'; render(); scrollTo(0, 0); }
+}
+
+/* ---------- hints & notes ---------- */
+const gUrl = text => 'https://www.google.com/search?q=' + encodeURIComponent(text);
+function hintsEl(q) {
+  const stem = q.q.replace(/\s+/g, ' ').replace(/[，。、；：？！（）()「」]/g, ' ').trim().slice(0, 40);
+  return $('div', { class: 'hints' },
+    $('a', { href: gUrl('政府採購法 ' + stem), target: '_blank', rel: 'noopener' }, '🔍 Google 搜尋這題'),
+    q.l ? $('a', { href: gUrl(q.l), target: '_blank', rel: 'noopener' }, `📖 查法條：${q.l.length > 16 ? q.l.slice(0, 16) + '…' : q.l}`) : null);
+}
+function memoEl(q) {
+  const cur = notes[q.id] ? notes[q.id][0] : '';
+  const status = $('span', {}, cur ? '已儲存' : '打字會自動儲存');
+  let t = null;
+  const ta = $('textarea', { id: 'memo', rows: 3, placeholder: '寫下自己的筆記、記憶口訣…',
+    oninput: e => {
+      status.textContent = '儲存中…'; clearTimeout(t);
+      const v = e.target.value;
+      t = setTimeout(() => {
+        if (v.trim()) notes[q.id] = [v, Date.now()]; else delete notes[q.id];
+        LS.set('pq-notes', notes); status.textContent = v.trim() ? '已儲存' : '打字會自動儲存';
+      }, 400);
+    } }, cur);
+  return $('div', { class: 'memo' }, $('label', { for: 'memo', class: 'small muted' }, '📝 我的筆記'), ta, $('div', { class: 'small muted' }, status));
 }
 
 /* ---------- views ---------- */
@@ -434,7 +476,9 @@ function viewQuiz() {
     $('article', { class: 'qcard' },
       $('div', { class: 'qmeta' }, $('span', {}, D.cats[q.c]), $('span', { class: 'tag' }, `${q.t === 'mc' ? '選擇' : '是非'} #${q.n}`)),
       $('p', { class: 'qtext' }, q.q),
-      opts, verdict),
+      opts, verdict,
+      answered && chosen !== q.a ? hintsEl(q) : null,
+      answered ? memoEl(q) : null),
     $('div', { class: 'qact' },
       $('button', { class: 'star', 'aria-pressed': String(isStar(q)), onclick: () => toggleStar(q) }, isStar(q) ? '★ 已收藏' : '☆ 收藏'),
       answered ? $('button', { class: 'go', onclick: next }, session.i < n - 1 ? '下一題' : '看結果')
@@ -457,7 +501,7 @@ function viewResult() {
         wrong.length ? $('button', { class: 'go', onclick: () => startSession(shuffle(wrong.slice()), '這回答錯的題目') }, `重做答錯的 ${wrong.length} 題`) : null,
         $('button', { class: 'ghost', onclick: () => { session = null; LS.set('pq-session', null); view = 'home'; render(); scrollTo(0, 0); } }, '回首頁'))),
     wrong.length ? $('h2', {}, '答錯的題目') : null,
-    $('div', { class: 'list' }, wrong.map(id => itemEl(byId[id]))),
+    $('div', { class: 'list' }, wrong.map(id => itemEl(byId[id], '', true))),
   ];
 }
 
@@ -467,20 +511,22 @@ function hl(text, term) {
   while ((j = text.indexOf(term, i)) !== -1) { out.push(text.slice(i, j), $('mark', {}, term)); i = j + term.length; }
   out.push(text.slice(i)); return out;
 }
-function itemEl(q, term = '') {
+function itemEl(q, term = '', withHints = false) {
   return $('div', { class: 'item' },
     $('div', { class: 'qmeta' }, $('span', {}, D.cats[q.c]), $('span', { class: 'tag' }, `${q.t === 'mc' ? '選擇' : '是非'} #${q.n}`)),
     $('div', {}, hl(q.q, term)),
     q.t === 'mc'
       ? $('ol', {}, q.o.map((o, i) => $('li', { class: MC_KEYS[i] === q.a ? 'ans' : null }, hl(o, term))))
       : $('div', { class: 'a' }, `答案：${TF_LABEL[q.a]}`),
-    q.l ? $('div', { class: 'small muted' }, `依據法源：${q.l}`) : null);
+    q.l ? $('div', { class: 'small muted' }, `依據法源：${q.l}`) : null,
+    notes[q.id] ? $('div', { class: 'note' }, '📝 ', hl(notes[q.id][0], term)) : null,
+    withHints ? hintsEl(q) : null);
 }
 
 function viewSearch() {
   const term = searchQ.trim();
   let hits = [];
-  if (term) hits = D.qs.filter(q => (searchCat < 0 || q.c === searchCat) && (q.q.includes(term) || (q.o && q.o.some(o => o.includes(term)))));
+  if (term) hits = D.qs.filter(q => (searchCat < 0 || q.c === searchCat) && (q.q.includes(term) || (q.o && q.o.some(o => o.includes(term))) || (notes[q.id] && notes[q.id][0].includes(term))));
   const input = $('input', { class: 'search', id: 'search-q', type: 'search', placeholder: '輸入關鍵字，例如：押標金、統包、第22條', value: searchQ,
     oninput: e => { searchQ = e.target.value; clearTimeout(viewSearch.t); viewSearch.t = setTimeout(() => { render(); const el = document.getElementById('search-q'); el.focus(); el.setSelectionRange(el.value.length, el.value.length); }, 250); } });
   const sel = $('select', { class: 'search', id: 'search-cat', onchange: e => { searchCat = +e.target.value; render(); } },
@@ -500,7 +546,7 @@ function render() {
 }
 
 document.addEventListener('keydown', e => {
-  if (view !== 'quiz' || !session || e.target.tagName === 'INPUT') return;
+  if (view !== 'quiz' || !session || (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
   const q = byId[session.ids[session.i]];
   const k = e.key.toUpperCase();
   if (session.ans[q.id] == null) {
